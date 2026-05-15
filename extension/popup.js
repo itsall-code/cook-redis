@@ -45,7 +45,34 @@ const els = {
   listFieldsBtn: $("listFieldsBtn"),
   viewFieldBtn: $("viewFieldBtn"),
   flushBtn: $("flushBtn"),
+  envSummary: $("envSummary"),
 };
+
+let appState = { settings: { envs: {} }, activeEnv: "dev" };
+
+function defaultEnv() {
+  return {
+    apiBase: "http://127.0.0.1:8642",
+    sourceRedis: { host: "127.0.0.1", port: 6379, password: null, db: 0 },
+    targetRedis: { host: "127.0.0.1", port: 6379, password: null, db: 1 },
+    serverConfig: { platform: "local", group: "1", server: "S1", pre_login: "local_" },
+    defaultHashName: "Account",
+    defaultTables: ["Account"],
+    defaultDeleteKeys: [],
+  };
+}
+
+function getActiveEnv() {
+  return appState.settings.envs[appState.activeEnv] || defaultEnv();
+}
+
+function normalizeApiBase(apiBase) {
+  return String(apiBase || "http://127.0.0.1:8642").replace(/\/+$/, "");
+}
+
+function apiUrl(path) {
+  return `${normalizeApiBase(getActiveEnv().apiBase)}${path}`;
+}
 
 function nowTime() {
   return new Date().toLocaleTimeString();
@@ -127,7 +154,7 @@ async function apiFetch(url, data = {}, timeout = DEFAULT_TIMEOUT) {
   const timer = setTimeout(() => controller.abort(), timeout);
 
   try {
-    const response = await fetch(url, {
+    const response = await fetch(apiUrl(url), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -163,22 +190,22 @@ async function apiFetch(url, data = {}, timeout = DEFAULT_TIMEOUT) {
   }
 }
 
-function buildRedisConfig(prefix) {
+function normalizeRedisConfig(cfg = {}) {
   return {
-    host: localStorage.getItem(`${prefix}.host`) || "",
-    port: Number(localStorage.getItem(`${prefix}.port`) || 6379),
-    db: Number(localStorage.getItem(`${prefix}.db`) || 0),
-    password: localStorage.getItem(`${prefix}.password`) || "",
+    host: String(cfg.host || "").trim(),
+    port: Number(cfg.port || 6379),
+    db: Number(cfg.db || 0),
+    password: cfg.password || null,
   };
 }
 
-function buildServerConfig(prefix = "") {
-  const p = prefix ? `${prefix}` : "";
+function buildServerConfig() {
+  const server = getActiveEnv().serverConfig || {};
   return {
-    pre_login: (localStorage.getItem(`${p}pre_login`) || "").trim(),
-    platform: (localStorage.getItem(`${p}platform`) || "").trim(),
-    group: (localStorage.getItem(`${p}group`) || "").trim(),
-    server: (localStorage.getItem(`${p}server`) || "").trim(),
+    pre_login: String(server.pre_login || "").trim(),
+    platform: String(server.platform || "").trim(),
+    group: String(server.group || "").trim(),
+    server: String(server.server || "").trim(),
   };
 }
 
@@ -201,17 +228,15 @@ function getBatchServerConfig() {
 }
 
 function currentEnvName() {
-  return (els.envName?.value || localStorage.getItem("activeEnvName") || "default").trim();
+  return (els.envName?.value || appState.activeEnv || "dev").trim();
 }
 
 function sourceRedisConfig() {
-  const env = currentEnvName();
-  return buildRedisConfig(`${env}.source`);
+  return normalizeRedisConfig(getActiveEnv().sourceRedis);
 }
 
 function targetRedisConfig() {
-  const env = currentEnvName();
-  return buildRedisConfig(`${env}.target`);
+  return normalizeRedisConfig(getActiveEnv().targetRedis);
 }
 
 function validateRedisConfig(cfg, label) {
@@ -284,7 +309,7 @@ function buildTestRedisPayload() {
 
   return {
     target: targetType,
-    config,
+    redis_config: config,
   };
 }
 
@@ -326,8 +351,8 @@ function buildListFieldsPayload() {
   if (!hash_name) throw new Error("Hash 名不能为空");
 
   return {
-    target: targetName,
-    config,
+    target_name: targetName,
+    target: config,
     hash_name,
   };
 }
@@ -343,8 +368,8 @@ function buildViewFieldPayload() {
   if (!field) throw new Error("Field 不能为空");
 
   return {
-    target: targetName,
-    config,
+    target_name: targetName,
+    target: config,
     hash_name,
     field,
   };
@@ -409,10 +434,7 @@ async function refreshBackendStatus() {
     return;
   }
 
-  const result = await apiFetch("/api/redis/test", {
-    target: "source",
-    config: source,
-  }, 15_000);
+  const result = await apiFetch("/api/redis/test", source, 15_000);
 
   if (result.ok) {
     setBackendStatus("可用", true, false);
@@ -421,43 +443,56 @@ async function refreshBackendStatus() {
   }
 }
 
+async function loadAppState() {
+  const data = await chrome.storage.local.get(["settings", "activeEnv"]);
+  let settings = data.settings;
+  let activeEnv = data.activeEnv;
+
+  if (!settings || !settings.envs || Object.keys(settings.envs).length === 0) {
+    settings = { envs: { dev: defaultEnv() } };
+    activeEnv = "dev";
+    await chrome.storage.local.set({ settings, activeEnv });
+  } else if (!activeEnv || !settings.envs[activeEnv]) {
+    activeEnv = Object.keys(settings.envs)[0];
+    await chrome.storage.local.set({ settings, activeEnv });
+  }
+
+  appState = { settings, activeEnv };
+}
+
 async function refreshEnvSelect() {
   if (!els.envName) return;
 
-  const savedList = localStorage.getItem("envNames");
-  let envNames = [];
-
-  try {
-    envNames = savedList ? JSON.parse(savedList) : [];
-  } catch {
-    envNames = [];
-  }
-
-  if (!Array.isArray(envNames) || envNames.length === 0) {
-    envNames = ["default"];
-  }
-
+  const envNames = Object.keys(appState.settings.envs);
   els.envName.innerHTML = envNames
     .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
     .join("");
 
-  const active = localStorage.getItem("activeEnvName") || envNames[0] || "default";
-  els.envName.value = envNames.includes(active) ? active : envNames[0];
-  localStorage.setItem("activeEnvName", els.envName.value);
+  els.envName.value = envNames.includes(appState.activeEnv) ? appState.activeEnv : envNames[0];
+  appState.activeEnv = els.envName.value;
+  renderEnvSummary();
 }
 
 async function ensureDefaultState() {
-  if (!localStorage.getItem("envNames")) {
-    localStorage.setItem("envNames", JSON.stringify(["default"]));
-  }
-  if (!localStorage.getItem("activeEnvName")) {
-    localStorage.setItem("activeEnvName", "default");
-  }
+  await loadAppState();
+}
+
+function renderEnvSummary() {
+  if (!els.envSummary) return;
+  const env = getActiveEnv();
+  const source = normalizeRedisConfig(env.sourceRedis);
+  const target = normalizeRedisConfig(env.targetRedis);
+  els.envSummary.innerHTML = `
+    <span>接口：${escapeHtml(normalizeApiBase(env.apiBase))}</span>
+    <span>源：${escapeHtml(source.host)}:${source.port} / DB ${source.db}</span>
+    <span>目标：${escapeHtml(target.host)}:${target.port} / DB ${target.db}</span>
+  `;
 }
 
 async function fillDefaults() {
-  const single = buildServerConfig("");
-  const batch = buildServerConfig("batch.");
+  const single = buildServerConfig();
+  const batch = buildServerConfig();
+  const env = getActiveEnv();
 
   if (els.preLogin) els.preLogin.value = single.pre_login || "";
   if (els.server) els.server.value = single.server || "";
@@ -469,19 +504,25 @@ async function fillDefaults() {
   if (els.batchPlatform) els.batchPlatform.value = batch.platform || single.platform || "";
   if (els.batchGroup) els.batchGroup.value = batch.group || single.group || "";
 
-  if (els.hashName && !els.hashName.value) els.hashName.value = "Account";
-  if (els.batchHashName && !els.batchHashName.value) els.batchHashName.value = "Account";
-  if (els.viewHashName && !els.viewHashName.value) els.viewHashName.value = "Account";
+  const hashName = env.defaultHashName || "Account";
+  if (els.hashName) els.hashName.value = els.hashName.value || hashName;
+  if (els.batchHashName) els.batchHashName.value = els.batchHashName.value || hashName;
+  if (els.viewHashName) els.viewHashName.value = els.viewHashName.value || hashName;
+  if (els.deleteKeys && !els.deleteKeys.value) els.deleteKeys.value = (env.defaultDeleteKeys || []).join("\n");
+  if (els.deleteTables && !els.deleteTables.value) els.deleteTables.value = (env.defaultTables || []).join("\n");
+  renderEnvSummary();
 }
 
-function persistCurrentEnv() {
+async function persistCurrentEnv() {
   if (els.envName?.value) {
-    localStorage.setItem("activeEnvName", els.envName.value);
+    appState.activeEnv = els.envName.value;
+    await chrome.storage.local.set({ activeEnv: appState.activeEnv });
   }
 }
 
 async function switchEnv() {
-  persistCurrentEnv();
+  await persistCurrentEnv();
+  renderEnvSummary();
   appendLog(`已切换环境：${currentEnvName()}`, "info");
   await fillDefaults();
   await refreshBackendStatus();
@@ -493,7 +534,7 @@ async function testRedisConnection() {
       const payload = buildTestRedisPayload();
       appendLog(`开始测试 ${payload.target} Redis 连接...`, "info");
 
-      const result = await apiFetch("/api/redis/test", payload, 20_000);
+      const result = await apiFetch("/api/redis/test", payload.redis_config, 20_000);
 
       if (!result.ok) {
         appendLog(`Redis 连接失败：${result.error}`, "error");
@@ -604,7 +645,9 @@ async function deleteKeys() {
         throw new Error("请至少输入一个 key");
       }
 
-      if (!confirm(`确认删除 ${payload.keys.length} 个 key？`)) return;
+      const confirmText = `DELETE ${payload.keys.length} db=${payload.target.db}`;
+      if (!confirm(`确认删除 ${payload.keys.length} 个 key？\n后端确认码：${confirmText}`)) return;
+      payload.confirm_text = confirmText;
 
       appendLog(`开始删除 ${payload.keys.length} 个 keys...`, "info");
       const result = await apiFetch("/api/redis/delete-keys", payload, LONG_TIMEOUT);
@@ -636,7 +679,9 @@ async function deleteTables() {
         throw new Error("请至少输入一个 table");
       }
 
-      if (!confirm(`确认删除 ${payload.tables.length} 个 table？`)) return;
+      const confirmText = `DELETE_TABLES ${payload.tables.length} db=${payload.target.db}`;
+      if (!confirm(`确认删除 ${payload.tables.length} 个 table？\n后端确认码：${confirmText}`)) return;
+      payload.confirm_text = confirmText;
 
       appendLog(`开始删除 ${payload.tables.length} 个 tables...`, "info");
       const result = await apiFetch("/api/redis/delete-tables", payload, LONG_TIMEOUT);
@@ -663,9 +708,9 @@ async function listFields() {
   await withButtonLoading(els.listFieldsBtn, async () => {
     try {
       const payload = buildListFieldsPayload();
-      appendLog(`开始读取字段列表：${payload.hash_name}`, "info");
+      appendLog(`开始读取 ${payload.target_name} 字段列表：${payload.hash_name}`, "info");
 
-      const result = await apiFetch("/api/redis/hash/fields", payload, LONG_TIMEOUT);
+      const result = await apiFetch("/api/redis/hash/list", payload, LONG_TIMEOUT);
 
       if (!result.ok) {
         appendLog(`列出字段失败：${result.error}`, "error");
@@ -690,9 +735,9 @@ async function viewField() {
   await withButtonLoading(els.viewFieldBtn, async () => {
     try {
       const payload = buildViewFieldPayload();
-      appendLog(`开始读取字段：${payload.hash_name} / ${payload.field}`, "info");
+      appendLog(`开始读取 ${payload.target_name} 字段：${payload.hash_name} / ${payload.field}`, "info");
 
-      const result = await apiFetch("/api/redis/hash/visualize", payload, LONG_TIMEOUT);
+      const result = await apiFetch("/api/redis/hash/get", payload, LONG_TIMEOUT);
 
       if (!result.ok) {
         appendLog(`字段可视化失败：${result.error}`, "error");
@@ -714,14 +759,15 @@ async function flushDb() {
       const target = targetRedisConfig();
       validateRedisConfig(target, "target Redis");
 
-      const text = prompt('危险操作：请输入 "FLUSHDB" 以确认清空目标 DB');
-      if (text !== "FLUSHDB") {
+      const confirmText = `FLUSHDB db=${target.db} host=${target.host}`;
+      const text = prompt(`危险操作：请输入以下确认码以清空目标 DB\n${confirmText}`);
+      if (text !== confirmText) {
         appendLog("已取消清空 DB", "warn");
         return;
       }
 
       appendLog("开始清空目标 DB...", "warn");
-      const result = await apiFetch("/api/redis/flushdb", { target }, LONG_TIMEOUT);
+      const result = await apiFetch("/api/redis/flushdb", { target, confirm_text: confirmText }, LONG_TIMEOUT);
 
       if (!result.ok) {
         appendLog(`清空 DB 失败：${result.error}`, "error");
