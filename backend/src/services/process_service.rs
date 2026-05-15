@@ -12,9 +12,10 @@ use crate::{
     utils::msgpack,
 };
 
-const HSCAN_COUNT: usize = 500;
-const PIPELINE_BATCH_SIZE: usize = 200;
-const PROGRESS_LOG_EVERY: usize = 500;
+const HSCAN_COUNT: usize = 2_000;
+const PIPELINE_BATCH_SIZE: usize = 1_000;
+const HMGET_BATCH_SIZE: usize = 1_000;
+const PROGRESS_LOG_EVERY: usize = 2_000;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct LocalizeSummary {
@@ -24,6 +25,118 @@ pub struct LocalizeSummary {
     pub skipped: usize,
     pub written: usize,
     pub elapsed_ms: u128,
+}
+
+struct LocalizeContext {
+    platform: String,
+    group: String,
+    server: String,
+    platform_num: Option<i64>,
+    group_num: Option<i64>,
+    server_re: Regex,
+    platform_patterns: Vec<(Regex, PlatformReplacement)>,
+    group_patterns: Vec<(Regex, GroupReplacement)>,
+    server_patterns: Vec<(Regex, ServerReplacement)>,
+}
+
+#[derive(Clone, Copy)]
+enum PlatformReplacement {
+    PlatformJson,
+    PlatJson,
+    PlatformIdJson,
+    PlatformKv,
+    PlatKv,
+    PlatformIdKv,
+}
+
+#[derive(Clone, Copy)]
+enum GroupReplacement {
+    GroupJson,
+    GroupIdJson,
+    GidJson,
+    GroupKv,
+    GroupIdKv,
+    GidKv,
+}
+
+#[derive(Clone, Copy)]
+enum ServerReplacement {
+    ServerJson,
+    SidJson,
+    ZoneJson,
+    ServerKv,
+    SidKv,
+    ZoneKv,
+}
+
+impl LocalizeContext {
+    fn new(platform: &str, group: &str, server: &str) -> anyhow::Result<Self> {
+        Ok(Self {
+            platform: platform.to_string(),
+            group: group.to_string(),
+            server: server.to_string(),
+            platform_num: platform.parse::<i64>().ok(),
+            group_num: group.parse::<i64>().ok(),
+            server_re: Regex::new(r"\bS\d+\b")?,
+            platform_patterns: vec![
+                (
+                    Regex::new(r#""platform":"[^"]+""#)?,
+                    PlatformReplacement::PlatformJson,
+                ),
+                (
+                    Regex::new(r#""plat":"[^"]+""#)?,
+                    PlatformReplacement::PlatJson,
+                ),
+                (
+                    Regex::new(r#""platformId":"[^"]+""#)?,
+                    PlatformReplacement::PlatformIdJson,
+                ),
+                (
+                    Regex::new(r#"platform=[^,}\]]+"#)?,
+                    PlatformReplacement::PlatformKv,
+                ),
+                (Regex::new(r#"plat=[^,}\]]+"#)?, PlatformReplacement::PlatKv),
+                (
+                    Regex::new(r#"platformId=[^,}\]]+"#)?,
+                    PlatformReplacement::PlatformIdKv,
+                ),
+            ],
+            group_patterns: vec![
+                (
+                    Regex::new(r#""group":"[^"]+""#)?,
+                    GroupReplacement::GroupJson,
+                ),
+                (
+                    Regex::new(r#""groupId":"[^"]+""#)?,
+                    GroupReplacement::GroupIdJson,
+                ),
+                (Regex::new(r#""gid":"[^"]+""#)?, GroupReplacement::GidJson),
+                (Regex::new(r#"group=[^,}\]]+"#)?, GroupReplacement::GroupKv),
+                (
+                    Regex::new(r#"groupId=[^,}\]]+"#)?,
+                    GroupReplacement::GroupIdKv,
+                ),
+                (Regex::new(r#"gid=[^,}\]]+"#)?, GroupReplacement::GidKv),
+            ],
+            server_patterns: vec![
+                (
+                    Regex::new(r#""server":"[^"]+""#)?,
+                    ServerReplacement::ServerJson,
+                ),
+                (Regex::new(r#""sid":"[^"]+""#)?, ServerReplacement::SidJson),
+                (
+                    Regex::new(r#""zone":"[^"]+""#)?,
+                    ServerReplacement::ZoneJson,
+                ),
+                (
+                    Regex::new(r#"server=[^,}\]]+"#)?,
+                    ServerReplacement::ServerKv,
+                ),
+                (Regex::new(r#"sid=[^,}\]]+"#)?, ServerReplacement::SidKv),
+                (Regex::new(r#"zone=[^,}\]]+"#)?, ServerReplacement::ZoneKv),
+            ],
+        })
+    }
 }
 
 pub async fn localize_single_account(req: &LocalizeAccountRequest) -> anyhow::Result<String> {
@@ -45,12 +158,8 @@ pub async fn localize_single_account(req: &LocalizeAccountRequest) -> anyhow::Re
             )
         })?;
 
-    let encoded = localize_raw_msgpack(
-        &raw,
-        &req.server.platform,
-        &req.server.group,
-        &req.server.server,
-    )?;
+    let ctx = LocalizeContext::new(&req.server.platform, &req.server.group, &req.server.server)?;
+    let encoded = localize_raw_msgpack(&raw, &ctx)?;
 
     redis_service::set_hash_field_bytes_with_conn(&mut dst, &req.hash_name, &target_field, encoded)
         .await
@@ -69,14 +178,14 @@ pub async fn localize_batch(req: &BatchLocalizeRequest) -> anyhow::Result<Locali
     let mut src = redis_service::create_connection(&req.source).await?;
     let mut dst = redis_service::create_connection(&req.target).await?;
 
+    let ctx = LocalizeContext::new(&req.server.platform, &req.server.group, &req.server.server)?;
+
     localize_entries_from_fields(
         &mut src,
         &mut dst,
         &req.hash_name,
         &req.source_fields,
-        &req.server.platform,
-        &req.server.group,
-        &req.server.server,
+        &ctx,
         &req.server.pre_login,
         started,
     )
@@ -88,6 +197,7 @@ pub async fn localize_all_acc(req: &BatchLocalizeRequest) -> anyhow::Result<Loca
 
     let mut src = redis_service::create_connection(&req.source).await?;
     let mut dst = redis_service::create_connection(&req.target).await?;
+    let ctx = LocalizeContext::new(&req.server.platform, &req.server.group, &req.server.server)?;
 
     let mut cursor: u64 = 0;
     let mut scanned = 0usize;
@@ -111,12 +221,7 @@ pub async fn localize_all_acc(req: &BatchLocalizeRequest) -> anyhow::Result<Loca
         for (field, raw) in entries {
             scanned += 1;
 
-            let encoded = match localize_raw_msgpack(
-                &raw,
-                &req.server.platform,
-                &req.server.group,
-                &req.server.server,
-            ) {
+            let encoded = match localize_raw_msgpack(&raw, &ctx) {
                 Ok(v) => v,
                 Err(err) => {
                     skipped += 1;
@@ -134,11 +239,15 @@ pub async fn localize_all_acc(req: &BatchLocalizeRequest) -> anyhow::Result<Loca
 
             if batch_items.len() >= PIPELINE_BATCH_SIZE {
                 let n = batch_items.len();
-                redis_service::set_hash_fields_bytes_pipeline(&mut dst, &req.hash_name, &batch_items)
-                    .await
-                    .with_context(|| {
-                        format!("failed to write pipeline batch into hash {}", req.hash_name)
-                    })?;
+                redis_service::set_hash_fields_bytes_pipeline(
+                    &mut dst,
+                    &req.hash_name,
+                    &batch_items,
+                )
+                .await
+                .with_context(|| {
+                    format!("failed to write pipeline batch into hash {}", req.hash_name)
+                })?;
                 written += n;
                 batch_items.clear();
             }
@@ -166,7 +275,12 @@ pub async fn localize_all_acc(req: &BatchLocalizeRequest) -> anyhow::Result<Loca
         let n = batch_items.len();
         redis_service::set_hash_fields_bytes_pipeline(&mut dst, &req.hash_name, &batch_items)
             .await
-            .with_context(|| format!("failed to write final pipeline batch into hash {}", req.hash_name))?;
+            .with_context(|| {
+                format!(
+                    "failed to write final pipeline batch into hash {}",
+                    req.hash_name
+                )
+            })?;
         written += n;
     }
 
@@ -185,9 +299,7 @@ async fn localize_entries_from_fields(
     dst: &mut MultiplexedConnection,
     hash_name: &str,
     fields: &[String],
-    platform: &str,
-    group: &str,
-    server: &str,
+    ctx: &LocalizeContext,
     pre_login: &str,
     started: Instant,
 ) -> anyhow::Result<LocalizeSummary> {
@@ -197,53 +309,57 @@ async fn localize_entries_from_fields(
     let mut written = 0usize;
     let mut batch_items: Vec<(String, Vec<u8>)> = Vec::with_capacity(PIPELINE_BATCH_SIZE);
 
-    for field in fields {
-        scanned += 1;
+    for fields_chunk in fields.chunks(HMGET_BATCH_SIZE) {
+        let values =
+            redis_service::get_hash_fields_bytes_with_conn(src, hash_name, fields_chunk).await?;
 
-        let raw = match redis_service::get_hash_field_bytes_with_conn(src, hash_name, field).await {
-            Ok(v) => v,
-            Err(err) => {
+        for (field, raw) in fields_chunk.iter().zip(values) {
+            scanned += 1;
+
+            let Some(raw) = raw else {
                 skipped += 1;
-                eprintln!("[WARN] skip field {} in hash {}: {}", field, hash_name, err);
+                eprintln!("[WARN] skip missing field {} in hash {}", field, hash_name);
                 continue;
-            }
-        };
+            };
 
-        let encoded = match localize_raw_msgpack(&raw, platform, group, server) {
-            Ok(v) => v,
-            Err(err) => {
-                skipped += 1;
-                eprintln!(
-                    "[WARN] localize field {} in hash {} failed: {}",
-                    field, hash_name, err
+            let encoded = match localize_raw_msgpack(&raw, ctx) {
+                Ok(v) => v,
+                Err(err) => {
+                    skipped += 1;
+                    eprintln!(
+                        "[WARN] localize field {} in hash {} failed: {}",
+                        field, hash_name, err
+                    );
+                    continue;
+                }
+            };
+
+            let target_field = format!("{}{}", pre_login, field);
+            batch_items.push((target_field, encoded));
+            localized += 1;
+
+            if batch_items.len() >= PIPELINE_BATCH_SIZE {
+                let n = batch_items.len();
+                redis_service::set_hash_fields_bytes_pipeline(dst, hash_name, &batch_items)
+                    .await
+                    .with_context(|| {
+                        format!("failed to write pipeline batch into hash {}", hash_name)
+                    })?;
+                written += n;
+                batch_items.clear();
+            }
+
+            if scanned % PROGRESS_LOG_EVERY == 0 {
+                println!(
+                    "[localize_batch] hash={} scanned={} localized={} skipped={} written={} elapsed_ms={}",
+                    hash_name,
+                    scanned,
+                    localized,
+                    skipped,
+                    written,
+                    started.elapsed().as_millis()
                 );
-                continue;
             }
-        };
-
-        let target_field = format!("{}{}", pre_login, field);
-        batch_items.push((target_field, encoded));
-        localized += 1;
-
-        if batch_items.len() >= PIPELINE_BATCH_SIZE {
-            let n = batch_items.len();
-            redis_service::set_hash_fields_bytes_pipeline(dst, hash_name, &batch_items)
-                .await
-                .with_context(|| format!("failed to write pipeline batch into hash {}", hash_name))?;
-            written += n;
-            batch_items.clear();
-        }
-
-        if scanned % PROGRESS_LOG_EVERY == 0 {
-            println!(
-                "[localize_batch] hash={} scanned={} localized={} skipped={} written={} elapsed_ms={}",
-                hash_name,
-                scanned,
-                localized,
-                skipped,
-                written,
-                started.elapsed().as_millis()
-            );
         }
     }
 
@@ -251,7 +367,12 @@ async fn localize_entries_from_fields(
         let n = batch_items.len();
         redis_service::set_hash_fields_bytes_pipeline(dst, hash_name, &batch_items)
             .await
-            .with_context(|| format!("failed to write final pipeline batch into hash {}", hash_name))?;
+            .with_context(|| {
+                format!(
+                    "failed to write final pipeline batch into hash {}",
+                    hash_name
+                )
+            })?;
         written += n;
     }
 
@@ -265,90 +386,39 @@ async fn localize_entries_from_fields(
     })
 }
 
-fn localize_raw_msgpack(
-    raw: &[u8],
-    platform: &str,
-    group: &str,
-    server: &str,
-) -> anyhow::Result<Vec<u8>> {
+fn localize_raw_msgpack(raw: &[u8], ctx: &LocalizeContext) -> anyhow::Result<Vec<u8>> {
     let mut value = msgpack::decode_to_json_value(raw)?;
-    transform_value(&mut value, platform, group, server)?;
+    transform_value(&mut value, ctx)?;
     msgpack::encode_from_json_value(&value)
 }
 
-fn transform_value(
-    value: &mut Value,
-    platform: &str,
-    group: &str,
-    server: &str,
-) -> anyhow::Result<()> {
-    let platform_num = platform.parse::<i64>().ok();
-    let group_num = group.parse::<i64>().ok();
-
-    let server_re = Regex::new(r"\bS\d+\b")?;
-
-    transform_node(
-        value,
-        platform,
-        group,
-        server,
-        platform_num,
-        group_num,
-        &server_re,
-        true,
-    )
+fn transform_value(value: &mut Value, ctx: &LocalizeContext) -> anyhow::Result<()> {
+    transform_node(value, ctx, true)
 }
 
-fn transform_node(
-    value: &mut Value,
-    platform: &str,
-    group: &str,
-    server: &str,
-    platform_num: Option<i64>,
-    group_num: Option<i64>,
-    server_re: &Regex,
-    is_root: bool,
-) -> anyhow::Result<()> {
+fn transform_node(value: &mut Value, ctx: &LocalizeContext, is_root: bool) -> anyhow::Result<()> {
     match value {
         Value::String(s) => {
             let mut out = s.clone();
-            out = replace_platform_like(&out, platform);
-            out = replace_group_like(&out, group);
-            out = replace_server_like(&out, server, server_re);
+            out = replace_platform_like(&out, ctx);
+            out = replace_group_like(&out, ctx);
+            out = replace_server_like(&out, ctx);
             *s = out;
         }
         Value::Array(arr) => {
             if is_root {
-                patch_root_array(arr, platform_num, group_num);
+                patch_root_array(arr, ctx.platform_num, ctx.group_num);
             }
 
             for item in arr.iter_mut() {
-                transform_node(
-                    item,
-                    platform,
-                    group,
-                    server,
-                    platform_num,
-                    group_num,
-                    server_re,
-                    false,
-                )?;
+                transform_node(item, ctx, false)?;
             }
         }
         Value::Object(map) => {
-            patch_object_keys(map, platform, group, server, platform_num, group_num);
+            patch_object_keys(map, ctx);
 
             for (_, v) in map.iter_mut() {
-                transform_node(
-                    v,
-                    platform,
-                    group,
-                    server,
-                    platform_num,
-                    group_num,
-                    server_re,
-                    false,
-                )?;
+                transform_node(v, ctx, false)?;
             }
         }
         _ => {}
@@ -386,19 +456,14 @@ fn patch_array_platform_group(
     }
 }
 
-fn patch_object_keys(
-    map: &mut Map<String, Value>,
-    platform: &str,
-    group: &str,
-    server: &str,
-    platform_num: Option<i64>,
-    group_num: Option<i64>,
-) {
+fn patch_object_keys(map: &mut Map<String, Value>, ctx: &LocalizeContext) {
     for (k, v) in map.iter_mut() {
         match k.as_str() {
-            "platform" | "plat" | "platformId" => patch_scalar_value(v, platform, platform_num),
-            "group" | "groupId" | "gid" => patch_scalar_value(v, group, group_num),
-            "server" | "sid" | "zone" => patch_string_value(v, server),
+            "platform" | "plat" | "platformId" => {
+                patch_scalar_value(v, &ctx.platform, ctx.platform_num)
+            }
+            "group" | "groupId" | "gid" => patch_scalar_value(v, &ctx.group, ctx.group_num),
+            "server" | "sid" | "zone" => patch_string_value(v, &ctx.server),
             _ => {}
         }
     }
@@ -434,117 +499,55 @@ fn is_numeric_like(v: &Value) -> bool {
     }
 }
 
-fn replace_platform_like(input: &str, platform: &str) -> String {
-    let patterns = [
-        r#""platform":"[^"]+""#,
-        r#""plat":"[^"]+""#,
-        r#""platformId":"[^"]+""#,
-        r#"platform=[^,}\]]+"#,
-        r#"plat=[^,}\]]+"#,
-        r#"platformId=[^,}\]]+"#,
-    ];
-
+fn replace_platform_like(input: &str, ctx: &LocalizeContext) -> String {
     let mut output = input.to_string();
-    for p in patterns {
-        let re = Regex::new(p).expect("invalid platform regex");
-        output = re
-            .replace_all(&output, |caps: &regex::Captures| {
-                let text = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
-                if text.starts_with("\"platform\"") {
-                    format!("\"platform\":\"{}\"", platform)
-                } else if text.starts_with("\"plat\"") {
-                    format!("\"plat\":\"{}\"", platform)
-                } else if text.starts_with("\"platformId\"") {
-                    format!("\"platformId\":\"{}\"", platform)
-                } else if text.starts_with("platform=") {
-                    format!("platform={}", platform)
-                } else if text.starts_with("plat=") {
-                    format!("plat={}", platform)
-                } else if text.starts_with("platformId=") {
-                    format!("platformId={}", platform)
-                } else {
-                    text.to_string()
-                }
-            })
-            .to_string();
+    for (re, replacement) in &ctx.platform_patterns {
+        let replacement = match replacement {
+            PlatformReplacement::PlatformJson => format!(r#""platform":"{}""#, ctx.platform),
+            PlatformReplacement::PlatJson => format!(r#""plat":"{}""#, ctx.platform),
+            PlatformReplacement::PlatformIdJson => format!(r#""platformId":"{}""#, ctx.platform),
+            PlatformReplacement::PlatformKv => format!("platform={}", ctx.platform),
+            PlatformReplacement::PlatKv => format!("plat={}", ctx.platform),
+            PlatformReplacement::PlatformIdKv => format!("platformId={}", ctx.platform),
+        };
+        output = re.replace_all(&output, replacement.as_str()).to_string();
     }
 
     output
 }
 
-fn replace_group_like(input: &str, group: &str) -> String {
-    let patterns = [
-        r#""group":"[^"]+""#,
-        r#""groupId":"[^"]+""#,
-        r#""gid":"[^"]+""#,
-        r#"group=[^,}\]]+"#,
-        r#"groupId=[^,}\]]+"#,
-        r#"gid=[^,}\]]+"#,
-    ];
-
+fn replace_group_like(input: &str, ctx: &LocalizeContext) -> String {
     let mut output = input.to_string();
-    for p in patterns {
-        let re = Regex::new(p).expect("invalid group regex");
-        output = re
-            .replace_all(&output, |caps: &regex::Captures| {
-                let text = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
-                if text.starts_with("\"group\"") {
-                    format!("\"group\":\"{}\"", group)
-                } else if text.starts_with("\"groupId\"") {
-                    format!("\"groupId\":\"{}\"", group)
-                } else if text.starts_with("\"gid\"") {
-                    format!("\"gid\":\"{}\"", group)
-                } else if text.starts_with("group=") {
-                    format!("group={}", group)
-                } else if text.starts_with("groupId=") {
-                    format!("groupId={}", group)
-                } else if text.starts_with("gid=") {
-                    format!("gid={}", group)
-                } else {
-                    text.to_string()
-                }
-            })
-            .to_string();
+    for (re, replacement) in &ctx.group_patterns {
+        let replacement = match replacement {
+            GroupReplacement::GroupJson => format!(r#""group":"{}""#, ctx.group),
+            GroupReplacement::GroupIdJson => format!(r#""groupId":"{}""#, ctx.group),
+            GroupReplacement::GidJson => format!(r#""gid":"{}""#, ctx.group),
+            GroupReplacement::GroupKv => format!("group={}", ctx.group),
+            GroupReplacement::GroupIdKv => format!("groupId={}", ctx.group),
+            GroupReplacement::GidKv => format!("gid={}", ctx.group),
+        };
+        output = re.replace_all(&output, replacement.as_str()).to_string();
     }
 
     output
 }
 
-fn replace_server_like(input: &str, server: &str, server_re: &Regex) -> String {
+fn replace_server_like(input: &str, ctx: &LocalizeContext) -> String {
     let mut output = input.to_string();
-
-    let kv_patterns = [
-        r#""server":"[^"]+""#,
-        r#""sid":"[^"]+""#,
-        r#""zone":"[^"]+""#,
-        r#"server=[^,}\]]+"#,
-        r#"sid=[^,}\]]+"#,
-        r#"zone=[^,}\]]+"#,
-    ];
-
-    for p in kv_patterns {
-        let re = Regex::new(p).expect("invalid server kv regex");
-        output = re
-            .replace_all(&output, |caps: &regex::Captures| {
-                let text = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
-                if text.starts_with("\"server\"") {
-                    format!("\"server\":\"{}\"", server)
-                } else if text.starts_with("\"sid\"") {
-                    format!("\"sid\":\"{}\"", server)
-                } else if text.starts_with("\"zone\"") {
-                    format!("\"zone\":\"{}\"", server)
-                } else if text.starts_with("server=") {
-                    format!("server={}", server)
-                } else if text.starts_with("sid=") {
-                    format!("sid={}", server)
-                } else if text.starts_with("zone=") {
-                    format!("zone={}", server)
-                } else {
-                    text.to_string()
-                }
-            })
-            .to_string();
+    for (re, replacement) in &ctx.server_patterns {
+        let replacement = match replacement {
+            ServerReplacement::ServerJson => format!(r#""server":"{}""#, ctx.server),
+            ServerReplacement::SidJson => format!(r#""sid":"{}""#, ctx.server),
+            ServerReplacement::ZoneJson => format!(r#""zone":"{}""#, ctx.server),
+            ServerReplacement::ServerKv => format!("server={}", ctx.server),
+            ServerReplacement::SidKv => format!("sid={}", ctx.server),
+            ServerReplacement::ZoneKv => format!("zone={}", ctx.server),
+        };
+        output = re.replace_all(&output, replacement.as_str()).to_string();
     }
 
-    server_re.replace_all(&output, server).to_string()
+    ctx.server_re
+        .replace_all(&output, ctx.server.as_str())
+        .to_string()
 }

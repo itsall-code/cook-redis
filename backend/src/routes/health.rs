@@ -1,5 +1,5 @@
-use axum::{routing::get, Json, Router};
 use crate::models::response::ApiResponse;
+use axum::{Json, Router, routing::get};
 
 pub fn routes() -> Router {
     Router::new().route("/api/health", get(health))
