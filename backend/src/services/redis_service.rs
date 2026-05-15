@@ -58,6 +58,22 @@ pub async fn delete_keys(cfg: &RedisConfig, keys: &[String]) -> anyhow::Result<u
     Ok(deleted)
 }
 
+pub async fn delete_tables(cfg: &RedisConfig, tables: &[String]) -> anyhow::Result<usize> {
+    if tables.is_empty() {
+        return Ok(0);
+    }
+
+    let mut conn = create_connection(cfg).await?;
+    let mut deleted = 0usize;
+
+    for table in tables {
+        let n: usize = redis::cmd("DEL").arg(table).query_async(&mut conn).await?;
+        deleted += n;
+    }
+
+    Ok(deleted)
+}
+
 pub async fn backup_db(source: &RedisConfig, target: &RedisConfig) -> anyhow::Result<usize> {
     let mut src = create_connection(source).await?;
     let mut dst = create_connection(target).await?;
@@ -84,8 +100,38 @@ pub async fn backup_db(source: &RedisConfig, target: &RedisConfig) -> anyhow::Re
 
 pub async fn list_hash_fields(cfg: &RedisConfig, hash_name: &str) -> anyhow::Result<Vec<String>> {
     let mut conn = create_connection(cfg).await?;
-    let fields: Vec<String> = redis::cmd("HKEYS").arg(hash_name).query_async(&mut conn).await?;
+    list_hash_fields_with_conn(&mut conn, hash_name).await
+}
+
+pub async fn list_hash_fields_with_conn(
+    conn: &mut MultiplexedConnection,
+    hash_name: &str,
+) -> anyhow::Result<Vec<String>> {
+    let fields: Vec<String> = redis::cmd("HKEYS").arg(hash_name).query_async(conn).await?;
     Ok(fields)
+}
+
+pub async fn scan_hash_entries(
+    conn: &mut MultiplexedConnection,
+    hash_name: &str,
+    cursor: u64,
+    count: usize,
+) -> anyhow::Result<(u64, Vec<(String, Vec<u8>)>)> {
+    let result: (u64, Vec<(String, Vec<u8>)>) = redis::cmd("HSCAN")
+        .arg(hash_name)
+        .arg(cursor)
+        .arg("COUNT")
+        .arg(count)
+        .query_async(conn)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to hscan hash {}, cursor={}, count={}",
+                hash_name, cursor, count
+            )
+        })?;
+
+    Ok(result)
 }
 
 pub async fn get_hash_field_bytes(
@@ -94,6 +140,14 @@ pub async fn get_hash_field_bytes(
     field: &str,
 ) -> anyhow::Result<Vec<u8>> {
     let mut conn = create_connection(cfg).await?;
+    get_hash_field_bytes_with_conn(&mut conn, hash_name, field).await
+}
+
+pub async fn get_hash_field_bytes_with_conn(
+    conn: &mut MultiplexedConnection,
+    hash_name: &str,
+    field: &str,
+) -> anyhow::Result<Vec<u8>> {
     let value: Option<Vec<u8>> = conn.hget(hash_name, field).await?;
     match value {
         Some(v) => Ok(v),
@@ -108,7 +162,35 @@ pub async fn set_hash_field_bytes(
     value: Vec<u8>,
 ) -> anyhow::Result<()> {
     let mut conn = create_connection(cfg).await?;
+    set_hash_field_bytes_with_conn(&mut conn, hash_name, field, value).await
+}
+
+pub async fn set_hash_field_bytes_with_conn(
+    conn: &mut MultiplexedConnection,
+    hash_name: &str,
+    field: &str,
+    value: Vec<u8>,
+) -> anyhow::Result<()> {
     let _: () = conn.hset(hash_name, field, value).await?;
+    Ok(())
+}
+
+pub async fn set_hash_fields_bytes_pipeline(
+    conn: &mut MultiplexedConnection,
+    hash_name: &str,
+    items: &[(String, Vec<u8>)],
+) -> anyhow::Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+
+    let mut pipe = redis::pipe();
+
+    for (field, value) in items {
+        pipe.cmd("HSET").arg(hash_name).arg(field).arg(value).ignore();
+    }
+
+    let _: () = pipe.query_async(conn).await?;
     Ok(())
 }
 
@@ -176,3 +258,11 @@ pub async fn get_hash_field_visualized(
     })
 }
 
+pub async fn get_hash_all_as_map(
+    cfg: &RedisConfig,
+    hash_name: &str,
+) -> anyhow::Result<HashMap<String, Vec<u8>>> {
+    let mut conn = create_connection(cfg).await?;
+    let map: HashMap<String, Vec<u8>> = conn.hgetall(hash_name).await?;
+    Ok(map)
+}

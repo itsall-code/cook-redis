@@ -1,7 +1,7 @@
 import redis
 
 # 创建 Redis 连接
-redis_client = redis.Redis(host='localhost', port=6379, db=1)
+redis_client = redis.Redis(host='localhost', port=6379, db=0)
 
 # 要存储的数据
 data = {
@@ -12,7 +12,7 @@ data = {
 }
 
 # 复制数据123456次
-replicated_data = {key + b'_%d' % i: value for i in range(123456) for key, value in data.items()}
+replicated_data = {key + b'_%d' % i: value for i in range(123) for key, value in data.items()}
 len(replicated_data)
 
 # 存储数据

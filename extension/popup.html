@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CookRedis 测试工具</title>
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -10,9 +11,9 @@
     <div class="popup-header">
       <h1>Cook-Redis 测试工具</h1>
       <div class="link-row">
-        <a href="options.html" target="_blank">系统设置</a>
+        <a href="options.html" target="_blank" rel="noopener noreferrer">系统设置</a>
         &emsp;&emsp;&emsp;
-        <a href="options.html" target="_blank">系统说明</a>
+        <a href="options.html" target="_blank" rel="noopener noreferrer">系统说明</a>
       </div>
     </div>
 
@@ -32,7 +33,9 @@
         <div class="row">
           <div class="col">
             <label for="envName">环境</label>
-            <select id="envName"></select>
+            <select id="envName">
+              <option value="">请选择环境</option>
+            </select>
           </div>
         </div>
       </div>
@@ -41,6 +44,7 @@
         <h2>1. 测试 Redis 连接</h2>
         <div class="row">
           <div class="col">
+            <label for="testTarget">测试目标</label>
             <select id="testTarget">
               <option value="source">源 Redis</option>
               <option value="target">目标 Redis</option>
@@ -52,7 +56,7 @@
 
       <div class="section snap-section">
         <h2>2. 备份数据库</h2>
-        <div class="small">源库 -> 目标库，会覆盖目标库</div>
+        <div class="small">源库 → 目标库，会覆盖目标库</div>
         <button id="backupBtn" type="button">执行备份</button>
       </div>
 
@@ -61,48 +65,99 @@
         <div class="row">
           <div class="col">
             <label for="hashName">Hash 名</label>
-            <input id="hashName" type="text" />
+            <input id="hashName" type="text" placeholder="例如：Account" />
           </div>
         </div>
+
         <div class="row">
           <div class="col">
             <label for="sourceField">源账号 Field</label>
-            <input id="sourceField" type="text" />
+            <input id="sourceField" type="text" placeholder="例如：hxc12_72049" />
           </div>
           <div class="col">
             <label for="targetField">目标账号 Field</label>
             <input id="targetField" type="text" placeholder="留空自动生成" />
           </div>
         </div>
+
+        <div class="row">
+          <div class="col">
+            <label for="preLogin">前缀 / pre_login</label>
+            <input id="preLogin" type="text" placeholder="例如：local_" />
+          </div>
+          <div class="col">
+            <label for="server">server</label>
+            <input id="server" type="text" placeholder="例如：S1" />
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="col">
+            <label for="platform">platform</label>
+            <input id="platform" type="text" placeholder="例如：1 或 local" />
+          </div>
+          <div class="col">
+            <label for="group">group</label>
+            <input id="group" type="text" placeholder="例如：1" />
+          </div>
+        </div>
+
         <button id="localizeBtn" type="button">执行本地化</button>
       </div>
 
       <div class="section snap-section">
         <h2>4. 全库 acc 表本地化</h2>
+
         <div class="row">
           <div class="col">
             <label for="batchHashName">Hash 名</label>
-            <input id="batchHashName" type="text" />
+            <input id="batchHashName" type="text" placeholder="例如：Account" />
           </div>
         </div>
+
+        <div class="row">
+          <div class="col">
+            <label for="batchPreLogin">前缀 / pre_login</label>
+            <input id="batchPreLogin" type="text" placeholder="例如：local_" />
+          </div>
+          <div class="col">
+            <label for="batchServer">server</label>
+            <input id="batchServer" type="text" placeholder="例如：S1" />
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="col">
+            <label for="batchPlatform">platform</label>
+            <input id="batchPlatform" type="text" placeholder="例如：1 或 local" />
+          </div>
+          <div class="col">
+            <label for="batchGroup">group</label>
+            <input id="batchGroup" type="text" placeholder="例如：1" />
+          </div>
+        </div>
+
         <div class="small">自动读取 source Redis 中该 Hash 的全部字段，并写入 target Redis</div>
         <button id="batchLocalizeBtn" type="button">执行全表本地化</button>
       </div>
 
       <div class="section snap-section">
         <h2>5. 删除指定 Keys / Tables</h2>
+
         <div class="row">
           <div class="col">
             <label for="deleteKeys">Keys（每行一个）</label>
-            <textarea id="deleteKeys"></textarea>
+            <textarea id="deleteKeys" placeholder="key1&#10;key2&#10;key3"></textarea>
           </div>
         </div>
+
         <div class="row">
           <div class="col">
             <label for="deleteTables">Tables（每行一个）</label>
-            <textarea id="deleteTables"></textarea>
+            <textarea id="deleteTables" placeholder="table1&#10;table2&#10;table3"></textarea>
           </div>
         </div>
+
         <div class="row">
           <div class="col">
             <button id="deleteKeysBtn" class="danger" type="button">删除 Keys</button>
@@ -137,7 +192,7 @@
           <div class="row">
             <div class="col">
               <label for="viewHashName">Hash 名</label>
-              <input id="viewHashName" type="text" />
+              <input id="viewHashName" type="text" placeholder="例如：Account" />
             </div>
           </div>
 
@@ -147,7 +202,7 @@
             </div>
             <div class="col field-action-input-col">
               <label for="viewField">Field</label>
-              <input id="viewField" type="text" />
+              <input id="viewField" type="text" placeholder="选择或输入一个 field" />
             </div>
           </div>
 

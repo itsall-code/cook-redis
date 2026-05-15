@@ -1,482 +1,753 @@
-function byId(id) {
-  return document.getElementById(id);
+const DEFAULT_TIMEOUT = 60_000;
+const LONG_TIMEOUT = 300_000;
+
+const $ = (id) => document.getElementById(id);
+
+const els = {
+  logBox: $("log"),
+  backendStatus: $("backendStatus"),
+
+  envName: $("envName"),
+  testTarget: $("testTarget"),
+
+  hashName: $("hashName"),
+  sourceField: $("sourceField"),
+  targetField: $("targetField"),
+  preLogin: $("preLogin"),
+  server: $("server"),
+  platform: $("platform"),
+  group: $("group"),
+
+  batchHashName: $("batchHashName"),
+  batchPreLogin: $("batchPreLogin"),
+  batchServer: $("batchServer"),
+  batchPlatform: $("batchPlatform"),
+  batchGroup: $("batchGroup"),
+
+  deleteKeys: $("deleteKeys"),
+  deleteTables: $("deleteTables"),
+
+  viewRedisTarget: $("viewRedisTarget"),
+  viewHashName: $("viewHashName"),
+  viewField: $("viewField"),
+  fieldList: $("fieldList"),
+  fieldViewer: $("fieldViewer"),
+  viewerSectionBody: $("viewerSectionBody"),
+  toggleViewerSectionBtn: $("toggleViewerSectionBtn"),
+
+  clearLogBtn: $("clearLogBtn"),
+  testRedisBtn: $("testRedisBtn"),
+  backupBtn: $("backupBtn"),
+  localizeBtn: $("localizeBtn"),
+  batchLocalizeBtn: $("batchLocalizeBtn"),
+  deleteKeysBtn: $("deleteKeysBtn"),
+  deleteTablesBtn: $("deleteTablesBtn"),
+  listFieldsBtn: $("listFieldsBtn"),
+  viewFieldBtn: $("viewFieldBtn"),
+  flushBtn: $("flushBtn"),
+};
+
+function nowTime() {
+  return new Date().toLocaleTimeString();
 }
 
-function linesToArray(text) {
-  return text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
-function safePretty(value) {
+function appendLog(message, level = "info") {
+  if (!els.logBox) return;
+
+  const row = document.createElement("div");
+  row.className = `log-item log-${level}`;
+
+  const safeMessage =
+    typeof message === "string" ? message : JSON.stringify(message, null, 2);
+
+  row.textContent = `[${nowTime()}] ${safeMessage}`;
+  els.logBox.prepend(row);
+}
+
+function clearLog() {
+  if (els.logBox) els.logBox.innerHTML = "";
+}
+
+function setBackendStatus(text, ok = false, isError = false) {
+  if (!els.backendStatus) return;
+  els.backendStatus.textContent = `后端状态：${text}`;
+  els.backendStatus.classList.remove("ok", "error", "warn");
+
+  if (isError) {
+    els.backendStatus.classList.add("error");
+  } else if (ok) {
+    els.backendStatus.classList.add("ok");
+  } else {
+    els.backendStatus.classList.add("warn");
+  }
+}
+
+function normalizeLines(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function setButtonLoading(button, loading, loadingText = "处理中...") {
+  if (!button) return;
+
+  if (loading) {
+    if (!button.dataset.originText) {
+      button.dataset.originText = button.textContent;
+    }
+    button.textContent = loadingText;
+    button.disabled = true;
+  } else {
+    button.textContent = button.dataset.originText || button.textContent;
+    button.disabled = false;
+  }
+}
+
+async function withButtonLoading(button, fn, loadingText = "处理中...") {
   try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
+    setButtonLoading(button, true, loadingText);
+    return await fn();
+  } finally {
+    setButtonLoading(button, false);
   }
 }
 
-function appendLog(text, type = "info") {
-  const log = byId("log");
-  if (!log) return;
+async function apiFetch(url, data = {}, timeout = DEFAULT_TIMEOUT) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
 
-  const now = new Date().toLocaleString();
-  const prefix =
-    type === "error"
-      ? "[ERROR]"
-      : type === "ok"
-      ? "[OK]"
-      : "[INFO]";
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+      signal: controller.signal,
+    });
 
-  const line = document.createElement("div");
-  line.className = `log-line ${type}`;
-  line.textContent = `[${now}] ${prefix} ${text}`;
+    const text = await response.text();
+    let parsed = null;
 
-  log.prepend(line);
-  log.scrollTop = 0;
+    try {
+      parsed = text ? JSON.parse(text) : {};
+    } catch {
+      parsed = { raw: text };
+    }
+
+    if (!response.ok) {
+      const message =
+        parsed?.message ||
+        parsed?.error ||
+        parsed?.raw ||
+        `HTTP ${response.status}`;
+      return { ok: false, error: message, status: response.status, data: parsed };
+    }
+
+    return { ok: true, data: parsed };
+  } catch (error) {
+    if (error.name === "AbortError") {
+      return { ok: false, error: "请求超时，请稍后重试" };
+    }
+    return { ok: false, error: error.message || "未知请求错误" };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-function setBackendStatus(text, ok = false, error = false) {
-  const el = byId("backendStatus");
-  if (!el) return;
-  el.textContent = text;
-  el.className = "status" + (ok ? " ok" : error ? " error" : "");
+function buildRedisConfig(prefix) {
+  return {
+    host: localStorage.getItem(`${prefix}.host`) || "",
+    port: Number(localStorage.getItem(`${prefix}.port`) || 6379),
+    db: Number(localStorage.getItem(`${prefix}.db`) || 0),
+    password: localStorage.getItem(`${prefix}.password`) || "",
+  };
 }
 
-async function ensureDefaultState() {
-  const data = await chrome.storage.local.get(["settings", "activeEnv"]);
-  let settings = data.settings;
-  let activeEnv = data.activeEnv;
+function buildServerConfig(prefix = "") {
+  const p = prefix ? `${prefix}` : "";
+  return {
+    pre_login: (localStorage.getItem(`${p}pre_login`) || "").trim(),
+    platform: (localStorage.getItem(`${p}platform`) || "").trim(),
+    group: (localStorage.getItem(`${p}group`) || "").trim(),
+    server: (localStorage.getItem(`${p}server`) || "").trim(),
+  };
+}
 
-  if (!settings || !settings.envs || Object.keys(settings.envs).length === 0) {
-    settings = {
-      envs: {
-        dev: {
-          apiBase: "http://127.0.0.1:8642",
-          sourceRedis: {
-            host: "127.0.0.1",
-            port: 6379,
-            password: null,
-            db: 0
-          },
-          targetRedis: {
-            host: "127.0.0.1",
-            port: 6379,
-            password: null,
-            db: 1
-          },
-          serverConfig: {
-            platform: "1",
-            group: "1",
-            server: "S1",
-            pre_login: "local_"
-          },
-          defaultHashName: "Account",
-          defaultTables: ["Account"],
-          defaultDeleteKeys: []
-        }
-      }
-    };
-    activeEnv = "dev";
-    await chrome.storage.local.set({ settings, activeEnv });
-  } else if (!activeEnv || !settings.envs[activeEnv]) {
-    activeEnv = Object.keys(settings.envs)[0];
-    await chrome.storage.local.set({ settings, activeEnv });
+function getSingleServerConfig() {
+  return {
+    pre_login: (els.preLogin?.value || "").trim(),
+    platform: (els.platform?.value || "").trim(),
+    group: (els.group?.value || "").trim(),
+    server: (els.server?.value || "").trim(),
+  };
+}
+
+function getBatchServerConfig() {
+  return {
+    pre_login: (els.batchPreLogin?.value || "").trim(),
+    platform: (els.batchPlatform?.value || "").trim(),
+    group: (els.batchGroup?.value || "").trim(),
+    server: (els.batchServer?.value || "").trim(),
+  };
+}
+
+function currentEnvName() {
+  return (els.envName?.value || localStorage.getItem("activeEnvName") || "default").trim();
+}
+
+function sourceRedisConfig() {
+  const env = currentEnvName();
+  return buildRedisConfig(`${env}.source`);
+}
+
+function targetRedisConfig() {
+  const env = currentEnvName();
+  return buildRedisConfig(`${env}.target`);
+}
+
+function validateRedisConfig(cfg, label) {
+  if (!cfg.host) {
+    throw new Error(`${label} host 不能为空`);
+  }
+  if (!cfg.port) {
+    throw new Error(`${label} port 不能为空`);
+  }
+}
+
+function validateServerConfig(serverCfg) {
+  if (!serverCfg.server) throw new Error("server 不能为空");
+  if (!serverCfg.platform) throw new Error("platform 不能为空");
+  if (!serverCfg.group) throw new Error("group 不能为空");
+}
+
+function buildSingleLocalizePayload() {
+  const hash_name = (els.hashName?.value || "").trim();
+  const source_field = (els.sourceField?.value || "").trim();
+  const target_field = (els.targetField?.value || "").trim();
+  const server = getSingleServerConfig();
+
+  if (!hash_name) throw new Error("Hash 名不能为空");
+  if (!source_field) throw new Error("源账号 Field 不能为空");
+  validateServerConfig(server);
+
+  const source = sourceRedisConfig();
+  const target = targetRedisConfig();
+
+  validateRedisConfig(source, "source Redis");
+  validateRedisConfig(target, "target Redis");
+
+  return {
+    source,
+    target,
+    hash_name,
+    source_field,
+    target_field: target_field || null,
+    server,
+  };
+}
+
+function buildBatchLocalizePayload() {
+  const hash_name = (els.batchHashName?.value || "").trim();
+  const server = getBatchServerConfig();
+
+  if (!hash_name) throw new Error("Hash 名不能为空");
+  validateServerConfig(server);
+
+  const source = sourceRedisConfig();
+  const target = targetRedisConfig();
+
+  validateRedisConfig(source, "source Redis");
+  validateRedisConfig(target, "target Redis");
+
+  return {
+    source,
+    target,
+    hash_name,
+    source_fields: [],
+    server,
+  };
+}
+
+function buildTestRedisPayload() {
+  const targetType = els.testTarget?.value || "source";
+  const config = targetType === "target" ? targetRedisConfig() : sourceRedisConfig();
+  validateRedisConfig(config, `${targetType} Redis`);
+
+  return {
+    target: targetType,
+    config,
+  };
+}
+
+function buildBackupPayload() {
+  const source = sourceRedisConfig();
+  const target = targetRedisConfig();
+  validateRedisConfig(source, "source Redis");
+  validateRedisConfig(target, "target Redis");
+
+  return { source, target };
+}
+
+function buildDeleteKeysPayload() {
+  const target = targetRedisConfig();
+  validateRedisConfig(target, "target Redis");
+
+  return {
+    target,
+    keys: normalizeLines(els.deleteKeys?.value || ""),
+  };
+}
+
+function buildDeleteTablesPayload() {
+  const target = targetRedisConfig();
+  validateRedisConfig(target, "target Redis");
+
+  return {
+    target,
+    tables: normalizeLines(els.deleteTables?.value || ""),
+  };
+}
+
+function buildListFieldsPayload() {
+  const hash_name = (els.viewHashName?.value || "").trim();
+  const targetName = els.viewRedisTarget?.value || "source";
+  const config = targetName === "target" ? targetRedisConfig() : sourceRedisConfig();
+  validateRedisConfig(config, `${targetName} Redis`);
+
+  if (!hash_name) throw new Error("Hash 名不能为空");
+
+  return {
+    target: targetName,
+    config,
+    hash_name,
+  };
+}
+
+function buildViewFieldPayload() {
+  const hash_name = (els.viewHashName?.value || "").trim();
+  const field = (els.viewField?.value || "").trim();
+  const targetName = els.viewRedisTarget?.value || "source";
+  const config = targetName === "target" ? targetRedisConfig() : sourceRedisConfig();
+  validateRedisConfig(config, `${targetName} Redis`);
+
+  if (!hash_name) throw new Error("Hash 名不能为空");
+  if (!field) throw new Error("Field 不能为空");
+
+  return {
+    target: targetName,
+    config,
+    hash_name,
+    field,
+  };
+}
+
+function renderFieldList(fields = []) {
+  if (!els.fieldList) return;
+
+  if (!Array.isArray(fields) || fields.length === 0) {
+    els.fieldList.style.display = "block";
+    els.fieldList.innerHTML = `<div class="small">没有读取到字段</div>`;
+    return;
   }
 
-  return { settings, activeEnv };
-}
+  const items = fields
+    .map(
+      (field) =>
+        `<button type="button" class="field-chip" data-field="${escapeHtml(field)}">${escapeHtml(field)}</button>`
+    )
+    .join("");
 
-async function getState() {
-  return await ensureDefaultState();
-}
+  els.fieldList.style.display = "block";
+  els.fieldList.innerHTML = `
+    <div class="viewer-title">字段列表（${fields.length}）</div>
+    <div class="field-chip-list">${items}</div>
+  `;
 
-async function getEnvSettings() {
-  const { settings, activeEnv } = await getState();
-  const env = settings.envs[activeEnv];
-  if (!env) {
-    throw new Error("当前环境配置不存在，请先到 options 页面保存配置");
-  }
-  return { env, activeEnv, settings };
-}
-
-async function refreshEnvSelect() {
-  const { settings, activeEnv } = await getState();
-  const select = byId("envName");
-  if (!select) return;
-
-  select.innerHTML = "";
-
-  Object.keys(settings.envs).forEach(name => {
-    const opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = name;
-    if (name === activeEnv) opt.selected = true;
-    select.appendChild(opt);
+  els.fieldList.querySelectorAll("[data-field]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const field = btn.getAttribute("data-field") || "";
+      if (els.viewField) els.viewField.value = field;
+      appendLog(`已选择字段：${field}`, "info");
+    });
   });
 }
 
-async function switchEnv() {
-  try {
-    const envName = byId("envName").value;
-    const { settings } = await getState();
-    await chrome.storage.local.set({ settings, activeEnv: envName });
-    appendLog(`已切换环境 ${envName}`, "ok");
-    await fillDefaults();
-    await refreshBackendStatus();
-  } catch (err) {
-    appendLog(`切换环境失败: ${err.message}`, "error");
-  }
+function renderViewer(data) {
+  if (!els.fieldViewer) return;
+
+  const pretty = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+
+  els.fieldViewer.innerHTML = `
+    <div class="viewer-title">读取结果</div>
+    <pre class="viewer-pre">${escapeHtml(pretty)}</pre>
+  `;
 }
 
-async function apiFetch(path, method = "GET", body = null) {
-  const { env } = await getEnvSettings();
-  const url = `${env.apiBase}${path}`;
+function toggleViewerSection() {
+  if (!els.viewerSectionBody || !els.toggleViewerSectionBtn) return;
 
-  const init = {
-    method,
-    headers: {
-      "Content-Type": "application/json"
-    }
-  };
-
-  if (body !== null) {
-    init.body = JSON.stringify(body);
-  }
-
-  const resp = await fetch(url, init);
-  const text = await resp.text();
-
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = { raw: text };
-  }
-
-  if (!resp.ok) {
-    throw new Error(json.message || `HTTP ${resp.status}: ${text}`);
-  }
-
-  return json;
+  const collapsed = els.viewerSectionBody.classList.contains("collapsed");
+  els.viewerSectionBody.classList.toggle("collapsed", !collapsed);
+  els.toggleViewerSectionBtn.textContent = collapsed ? "收起" : "展开";
 }
 
 async function refreshBackendStatus() {
-  setBackendStatus("后端状态：检查中...");
+  setBackendStatus("检查中...", false, false);
+
+  const source = sourceRedisConfig();
+  if (!source.host) {
+    setBackendStatus("未配置 source Redis", false, true);
+    return;
+  }
+
+  const result = await apiFetch("/api/redis/test", {
+    target: "source",
+    config: source,
+  }, 15_000);
+
+  if (result.ok) {
+    setBackendStatus("可用", true, false);
+  } else {
+    setBackendStatus(result.error || "不可用", false, true);
+  }
+}
+
+async function refreshEnvSelect() {
+  if (!els.envName) return;
+
+  const savedList = localStorage.getItem("envNames");
+  let envNames = [];
 
   try {
-    const { env } = await getEnvSettings();
-    const resp = await fetch(`${env.apiBase}/api/health`);
-    const text = await resp.text();
-    setBackendStatus(`后端状态：正常 (${resp.status}) ${text}`, true, false);
-  } catch (err) {
-    setBackendStatus(`后端状态：异常 - ${err.message}`, false, true);
+    envNames = savedList ? JSON.parse(savedList) : [];
+  } catch {
+    envNames = [];
+  }
+
+  if (!Array.isArray(envNames) || envNames.length === 0) {
+    envNames = ["default"];
+  }
+
+  els.envName.innerHTML = envNames
+    .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
+    .join("");
+
+  const active = localStorage.getItem("activeEnvName") || envNames[0] || "default";
+  els.envName.value = envNames.includes(active) ? active : envNames[0];
+  localStorage.setItem("activeEnvName", els.envName.value);
+}
+
+async function ensureDefaultState() {
+  if (!localStorage.getItem("envNames")) {
+    localStorage.setItem("envNames", JSON.stringify(["default"]));
+  }
+  if (!localStorage.getItem("activeEnvName")) {
+    localStorage.setItem("activeEnvName", "default");
   }
 }
 
 async function fillDefaults() {
-  const { env } = await getEnvSettings();
+  const single = buildServerConfig("");
+  const batch = buildServerConfig("batch.");
 
-  if (byId("hashName")) {
-    byId("hashName").value = env.defaultHashName || "Account";
-  }
-  if (byId("batchHashName")) {
-    byId("batchHashName").value = env.defaultHashName || "Account";;
-  }
-  if (byId("viewHashName")) {
-    byId("viewHashName").value = env.defaultHashName || "Account";
-  }
-  if (byId("deleteTables")) {
-    byId("deleteTables").value = (env.defaultTables || []).join("\n");
-  }
-  if (byId("deleteKeys")) {
-    byId("deleteKeys").value = (env.defaultDeleteKeys || []).join("\n");
+  if (els.preLogin) els.preLogin.value = single.pre_login || "";
+  if (els.server) els.server.value = single.server || "";
+  if (els.platform) els.platform.value = single.platform || "";
+  if (els.group) els.group.value = single.group || "";
+
+  if (els.batchPreLogin) els.batchPreLogin.value = batch.pre_login || single.pre_login || "";
+  if (els.batchServer) els.batchServer.value = batch.server || single.server || "";
+  if (els.batchPlatform) els.batchPlatform.value = batch.platform || single.platform || "";
+  if (els.batchGroup) els.batchGroup.value = batch.group || single.group || "";
+
+  if (els.hashName && !els.hashName.value) els.hashName.value = "Account";
+  if (els.batchHashName && !els.batchHashName.value) els.batchHashName.value = "Account";
+  if (els.viewHashName && !els.viewHashName.value) els.viewHashName.value = "Account";
+}
+
+function persistCurrentEnv() {
+  if (els.envName?.value) {
+    localStorage.setItem("activeEnvName", els.envName.value);
   }
 }
 
-function getSelectedRedis(env, selectId) {
-  const value = byId(selectId)?.value || "target";
-  return value === "source" ? env.sourceRedis : env.targetRedis;
+async function switchEnv() {
+  persistCurrentEnv();
+  appendLog(`已切换环境：${currentEnvName()}`, "info");
+  await fillDefaults();
+  await refreshBackendStatus();
 }
 
 async function testRedisConnection() {
-  try {
-    const { env } = await getEnvSettings();
-    const targetName = byId("testTarget").value;
-    const cfg = targetName === "source" ? env.sourceRedis : env.targetRedis;
-    appendLog(`开始测试 ${targetName} Redis 连接`);
-    const result = await apiFetch("/api/redis/test", "POST", cfg);
-    appendLog(result.message || safePretty(result), "ok");
-  } catch (err) {
-    appendLog(`Redis 测试失败: ${err.message}`, "error");
-  }
+  await withButtonLoading(els.testRedisBtn, async () => {
+    try {
+      const payload = buildTestRedisPayload();
+      appendLog(`开始测试 ${payload.target} Redis 连接...`, "info");
+
+      const result = await apiFetch("/api/redis/test", payload, 20_000);
+
+      if (!result.ok) {
+        appendLog(`Redis 连接失败：${result.error}`, "error");
+        return;
+      }
+
+      appendLog(`${payload.target} Redis 连接成功`, "ok");
+      setBackendStatus("可用", true, false);
+    } catch (error) {
+      appendLog(`Redis 连接失败：${error.message}`, "error");
+    }
+  }, "测试中...");
 }
 
 async function backupDb() {
-  try {
-    const { env } = await getEnvSettings();
-    appendLog("开始执行数据库备份：source -> target");
-    const result = await apiFetch("/api/redis/backup", "POST", {
-      source: env.sourceRedis,
-      target: env.targetRedis
-    });
-    appendLog(result.message || safePretty(result), "ok");
-  } catch (err) {
-    appendLog(`备份失败: ${err.message}`, "error");
-  }
+  await withButtonLoading(els.backupBtn, async () => {
+    try {
+      const payload = buildBackupPayload();
+
+      if (!confirm("确认执行备份？此操作会覆盖目标库。")) return;
+
+      appendLog("开始备份数据库...", "info");
+      const result = await apiFetch("/api/redis/backup", payload, LONG_TIMEOUT);
+
+      if (!result.ok) {
+        appendLog(`备份失败：${result.error}`, "error");
+        return;
+      }
+
+      const copied =
+        result.data?.data?.copied ??
+        result.data?.copied ??
+        result.data?.data ??
+        "未知";
+
+      appendLog(`备份完成，复制数量：${copied}`, "ok");
+    } catch (error) {
+      appendLog(`备份失败：${error.message}`, "error");
+    }
+  }, "备份中...");
 }
 
 async function localizeAccount() {
-  try {
-    const { env } = await getEnvSettings();
-    const hashName = byId("hashName").value.trim() || env.defaultHashName || "Account";
-    const sourceField = byId("sourceField").value.trim();
-    const targetFieldRaw = byId("targetField").value.trim();
+  await withButtonLoading(els.localizeBtn, async () => {
+    try {
+      const payload = buildSingleLocalizePayload();
+      appendLog(`开始单账号本地化：${payload.hash_name} / ${payload.source_field}`, "info");
 
-    if (!sourceField) {
-      throw new Error("sourceField 不能为空");
+      const result = await apiFetch("/api/process/localize-account", payload, LONG_TIMEOUT);
+
+      if (!result.ok) {
+        appendLog(`单账号本地化失败：${result.error}`, "error");
+        return;
+      }
+
+      const targetField =
+        result.data?.data ||
+        result.data?.target_field ||
+        payload.target_field ||
+        "已完成";
+
+      appendLog(`单账号本地化成功，目标字段：${targetField}`, "ok");
+    } catch (error) {
+      appendLog(`单账号本地化失败：${error.message}`, "error");
     }
-
-    const result = await apiFetch("/api/process/localize-account", "POST", {
-      source: env.sourceRedis,
-      target: env.targetRedis,
-      hash_name: hashName,
-      source_field: sourceField,
-      target_field: targetFieldRaw === "" ? null : targetFieldRaw,
-      server: env.serverConfig
-    });
-
-    appendLog((result.message || "本地化成功") + ` -> ${safePretty(result.data)}`, "ok");
-  } catch (err) {
-    appendLog(`本地化失败: ${err.message}`, "error");
-  }
+  }, "本地化中...");
 }
 
 async function batchLocalize() {
-  try {
-    const { env } = await getEnvSettings();
-    const hashName = byId("batchHashName").value.trim() || "acc";
+  await withButtonLoading(els.batchLocalizeBtn, async () => {
+    try {
+      const payload = buildBatchLocalizePayload();
 
-    appendLog(`开始对全表执行本地化: ${hashName}`);
+      if (!confirm("确认执行全表本地化？")) return;
 
-    const result = await apiFetch("/api/process/localize-all-acc", "POST", {
-      source: env.sourceRedis,
-      target: env.targetRedis,
-      hash_name: hashName,
-      source_fields: [],
-      server: env.serverConfig
-    });
+      appendLog(`开始全表本地化：${payload.hash_name}`, "info");
 
-    const targets = Array.isArray(result.data) ? result.data : [];
-    appendLog(result.message || `全表本地化成功，共 ${targets.length} 个字段`, "ok");
+      const result = await apiFetch("/api/process/localize-all-acc", payload, LONG_TIMEOUT);
 
-    if (targets.length) {
-      appendLog(`已生成 ${targets.length} 个目标字段，前 20 个：${targets.slice(0, 20).join(", ")}`);
+      if (!result.ok) {
+        appendLog(`全表本地化失败：${result.error}`, "error");
+        return;
+      }
+
+      const summary = result.data?.data || result.data || {};
+      const scanned = summary.scanned ?? 0;
+      const localized = summary.localized ?? 0;
+      const skipped = summary.skipped ?? 0;
+      const written = summary.written ?? localized;
+      const elapsed = summary.elapsed_ms ?? 0;
+
+      appendLog(
+        `全表本地化完成：scanned=${scanned}, localized=${localized}, skipped=${skipped}, written=${written}, elapsed=${elapsed}ms`,
+        "ok"
+      );
+    } catch (error) {
+      appendLog(`全表本地化失败：${error.message}`, "error");
     }
-  } catch (err) {
-    appendLog(`全表本地化失败: ${err.message}`, "error");
-  }
+  }, "执行中...");
 }
 
 async function deleteKeys() {
-  try {
-    const { env } = await getEnvSettings();
-    const keys = linesToArray(byId("deleteKeys").value);
+  await withButtonLoading(els.deleteKeysBtn, async () => {
+    try {
+      const payload = buildDeleteKeysPayload();
 
-    if (!keys.length) {
-      throw new Error("请填写要删除的 keys");
+      if (!payload.keys.length) {
+        throw new Error("请至少输入一个 key");
+      }
+
+      if (!confirm(`确认删除 ${payload.keys.length} 个 key？`)) return;
+
+      appendLog(`开始删除 ${payload.keys.length} 个 keys...`, "info");
+      const result = await apiFetch("/api/redis/delete-keys", payload, LONG_TIMEOUT);
+
+      if (!result.ok) {
+        appendLog(`删除 Keys 失败：${result.error}`, "error");
+        return;
+      }
+
+      const deleted =
+        result.data?.data?.deleted ??
+        result.data?.deleted ??
+        result.data?.data ??
+        payload.keys.length;
+
+      appendLog(`删除 Keys 完成，删除数量：${deleted}`, "ok");
+    } catch (error) {
+      appendLog(`删除 Keys 失败：${error.message}`, "error");
     }
-
-    const expected = `DELETE ${keys.length} db=${env.targetRedis.db}`;
-    const confirmText = window.prompt(
-      `危险操作：删除 ${keys.length} 个 keys\n请输入确认词：\n${expected}`,
-      ""
-    );
-
-    if (confirmText === null) {
-      appendLog("已取消删除 keys");
-      return;
-    }
-
-    const result = await apiFetch("/api/redis/delete-keys", "POST", {
-      target: env.targetRedis,
-      keys,
-      confirm_text: confirmText
-    });
-
-    appendLog(result.message || "删除 keys 成功", "ok");
-  } catch (err) {
-    appendLog(`删除 keys 失败: ${err.message}`, "error");
-  }
+  }, "删除中...");
 }
 
 async function deleteTables() {
-  try {
-    const { env } = await getEnvSettings();
-    const tables = linesToArray(byId("deleteTables").value);
+  await withButtonLoading(els.deleteTablesBtn, async () => {
+    try {
+      const payload = buildDeleteTablesPayload();
 
-    if (!tables.length) {
-      throw new Error("请填写要删除的 tables");
+      if (!payload.tables.length) {
+        throw new Error("请至少输入一个 table");
+      }
+
+      if (!confirm(`确认删除 ${payload.tables.length} 个 table？`)) return;
+
+      appendLog(`开始删除 ${payload.tables.length} 个 tables...`, "info");
+      const result = await apiFetch("/api/redis/delete-tables", payload, LONG_TIMEOUT);
+
+      if (!result.ok) {
+        appendLog(`删除 Tables 失败：${result.error}`, "error");
+        return;
+      }
+
+      const deleted =
+        result.data?.data?.deleted ??
+        result.data?.deleted ??
+        result.data?.data ??
+        payload.tables.length;
+
+      appendLog(`删除 Tables 完成，删除数量：${deleted}`, "ok");
+    } catch (error) {
+      appendLog(`删除 Tables 失败：${error.message}`, "error");
     }
-
-    const expected = `DELETE_TABLES ${tables.length} db=${env.targetRedis.db}`;
-    const confirmText = window.prompt(
-      `危险操作：删除 ${tables.length} 个 tables\n请输入确认词：\n${expected}`,
-      ""
-    );
-
-    if (confirmText === null) {
-      appendLog("已取消删除 tables");
-      return;
-    }
-
-    const result = await apiFetch("/api/redis/delete-tables", "POST", {
-      target: env.targetRedis,
-      tables,
-      confirm_text: confirmText
-    });
-
-    appendLog(result.message || "删除 tables 成功", "ok");
-  } catch (err) {
-    appendLog(`删除 tables 失败: ${err.message}`, "error");
-  }
+  }, "删除中...");
 }
 
-let fieldListVisible = false;
-
 async function listFields() {
-  const listEl = byId("fieldList");
-  const btn = byId("listFieldsBtn");
+  await withButtonLoading(els.listFieldsBtn, async () => {
+    try {
+      const payload = buildListFieldsPayload();
+      appendLog(`开始读取字段列表：${payload.hash_name}`, "info");
 
-  if (fieldListVisible) {
-    listEl.textContent = "";
-    listEl.style.display = "none";
-    btn.textContent = "列出字段";
-    fieldListVisible = false;
-    appendLog("字段列表已收起");
-    return;
-  }
+      const result = await apiFetch("/api/redis/hash/fields", payload, LONG_TIMEOUT);
 
-  try {
-    const { env } = await getEnvSettings();
-    const hashName = byId("viewHashName").value.trim() || env.defaultHashName || "Account";
-    const redisTarget = getSelectedRedis(env, "viewRedisTarget");
+      if (!result.ok) {
+        appendLog(`列出字段失败：${result.error}`, "error");
+        return;
+      }
 
-    appendLog(`开始列出字段: ${hashName} from ${byId("viewRedisTarget").value}`);
+      const fields =
+        result.data?.data?.fields ||
+        result.data?.fields ||
+        result.data?.data ||
+        [];
 
-    const result = await apiFetch("/api/redis/hash/list", "POST", {
-      target: redisTarget,
-      hash_name: hashName
-    });
-
-    const fields = result.data || [];
-    listEl.textContent = fields.join("\n");
-    listEl.style.display = "block";
-    btn.textContent = "收起字段";
-    fieldListVisible = true;
-
-    appendLog(`成功加载 ${fields.length} 个字段`, "ok");
-  } catch (err) {
-    appendLog(`列出字段失败: ${err.message}`, "error");
-  }
+      renderFieldList(fields);
+      appendLog(`字段读取完成，共 ${Array.isArray(fields) ? fields.length : 0} 个`, "ok");
+    } catch (error) {
+      appendLog(`列出字段失败：${error.message}`, "error");
+    }
+  }, "读取中...");
 }
 
 async function viewField() {
-  try {
-    const { env } = await getEnvSettings();
-    const hashName = byId("viewHashName").value.trim() || env.defaultHashName || "Account";
-    const field = byId("viewField").value.trim();
-    const redisTarget = getSelectedRedis(env, "viewRedisTarget");
+  await withButtonLoading(els.viewFieldBtn, async () => {
+    try {
+      const payload = buildViewFieldPayload();
+      appendLog(`开始读取字段：${payload.hash_name} / ${payload.field}`, "info");
 
-    if (!field) {
-      throw new Error("请输入要查看的 field");
+      const result = await apiFetch("/api/redis/hash/visualize", payload, LONG_TIMEOUT);
+
+      if (!result.ok) {
+        appendLog(`字段可视化失败：${result.error}`, "error");
+        return;
+      }
+
+      const data = result.data?.data || result.data || {};
+      renderViewer(data);
+      appendLog(`字段读取成功：${payload.field}`, "ok");
+    } catch (error) {
+      appendLog(`字段可视化失败：${error.message}`, "error");
     }
-
-    appendLog(`开始读取字段: ${hashName}/${field} from ${byId("viewRedisTarget").value}`);
-
-    const result = await apiFetch("/api/redis/hash/get", "POST", {
-      target: redisTarget,
-      hash_name: hashName,
-      field
-    });
-
-    byId("fieldViewer").textContent = safePretty(result.data);
-    appendLog(result.message || "读取字段成功", "ok");
-  } catch (err) {
-    appendLog(`读取字段失败: ${err.message}`, "error");
-  }
+  }, "读取中...");
 }
 
 async function flushDb() {
-  try {
-    const { env } = await getEnvSettings();
-    const expected = `FLUSHDB db=${env.targetRedis.db} host=${env.targetRedis.host}`;
-    const confirmText = window.prompt(
-      `危险操作：清空目标 DB\n请输入确认词：\n${expected}`,
-      ""
-    );
+  await withButtonLoading(els.flushBtn, async () => {
+    try {
+      const target = targetRedisConfig();
+      validateRedisConfig(target, "target Redis");
 
-    if (confirmText === null) {
-      appendLog("已取消 flushdb");
-      return;
+      const text = prompt('危险操作：请输入 "FLUSHDB" 以确认清空目标 DB');
+      if (text !== "FLUSHDB") {
+        appendLog("已取消清空 DB", "warn");
+        return;
+      }
+
+      appendLog("开始清空目标 DB...", "warn");
+      const result = await apiFetch("/api/redis/flushdb", { target }, LONG_TIMEOUT);
+
+      if (!result.ok) {
+        appendLog(`清空 DB 失败：${result.error}`, "error");
+        return;
+      }
+
+      appendLog("目标 DB 已清空", "ok");
+    } catch (error) {
+      appendLog(`清空 DB 失败：${error.message}`, "error");
     }
-
-    const result = await apiFetch("/api/redis/flushdb", "POST", {
-      target: env.targetRedis,
-      confirm_text: confirmText
-    });
-
-    appendLog(result.message || "flushdb 成功", "ok");
-  } catch (err) {
-    appendLog(`flushdb 失败: ${err.message}`, "error");
-  }
-}
-
-function clearLog() {
-  const log = byId("log");
-  if (!log) return;
-  log.innerHTML = "";
-  appendLog("日志已清空", "ok");
-}
-
-function toggleViewerSection() {
-  const body = byId("viewerSectionBody");
-  const btn = byId("toggleViewerSectionBtn");
-  const section = byId("viewerSection");
-
-  if (!body || !btn || !section) return;
-
-  const isCollapsed = body.classList.contains("collapsed");
-
-  if (isCollapsed) {
-    body.classList.remove("collapsed");
-    btn.textContent = "收起";
-    appendLog("已展开可视化面板");
-
-    window.setTimeout(() => {
-      section.scrollIntoView({
-        behavior: "smooth",
-        block: "start"
-      });
-    }, 40);
-  } else {
-    body.classList.add("collapsed");
-    btn.textContent = "展开";
-    appendLog("已收起可视化面板");
-  }
+  }, "清空中...");
 }
 
 function bindEvents() {
-  byId("envName")?.addEventListener("change", switchEnv);
-  byId("testRedisBtn")?.addEventListener("click", testRedisConnection);
-  byId("backupBtn")?.addEventListener("click", backupDb);
-  byId("localizeBtn")?.addEventListener("click", localizeAccount);
-  byId("batchLocalizeBtn")?.addEventListener("click", batchLocalize);
-  byId("deleteKeysBtn")?.addEventListener("click", deleteKeys);
-  byId("deleteTablesBtn")?.addEventListener("click", deleteTables);
-  byId("listFieldsBtn")?.addEventListener("click", listFields);
-  byId("viewFieldBtn")?.addEventListener("click", viewField);
-  byId("flushBtn")?.addEventListener("click", flushDb);
-  byId("clearLogBtn")?.addEventListener("click", clearLog);
-  byId("toggleViewerSectionBtn")?.addEventListener("click", toggleViewerSection);
+  els.envName?.addEventListener("change", switchEnv);
+  els.clearLogBtn?.addEventListener("click", clearLog);
+  els.testRedisBtn?.addEventListener("click", testRedisConnection);
+  els.backupBtn?.addEventListener("click", backupDb);
+  els.localizeBtn?.addEventListener("click", localizeAccount);
+  els.batchLocalizeBtn?.addEventListener("click", batchLocalize);
+  els.deleteKeysBtn?.addEventListener("click", deleteKeys);
+  els.deleteTablesBtn?.addEventListener("click", deleteTables);
+  els.listFieldsBtn?.addEventListener("click", listFields);
+  els.viewFieldBtn?.addEventListener("click", viewField);
+  els.flushBtn?.addEventListener("click", flushDb);
+  els.toggleViewerSectionBtn?.addEventListener("click", toggleViewerSection);
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -488,8 +759,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     await fillDefaults();
     await refreshBackendStatus();
     appendLog("插件初始化完成", "ok");
-  } catch (err) {
-    appendLog(`插件初始化失败: ${err.message}`, "error");
-    setBackendStatus(`初始化失败：${err.message}`, false, true);
+  } catch (error) {
+    appendLog(`插件初始化失败：${error.message}`, "error");
+    setBackendStatus(`初始化失败：${error.message}`, false, true);
   }
 });
