@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
-use base64::{engine::general_purpose, Engine as _};
-use redis::{aio::MultiplexedConnection, AsyncCommands};
+use base64::{Engine as _, engine::general_purpose};
+use redis::{AsyncCommands, aio::MultiplexedConnection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -155,6 +155,31 @@ pub async fn get_hash_field_bytes_with_conn(
     }
 }
 
+pub async fn get_hash_fields_bytes_with_conn(
+    conn: &mut MultiplexedConnection,
+    hash_name: &str,
+    fields: &[String],
+) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
+    if fields.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let values: Vec<Option<Vec<u8>>> = redis::cmd("HMGET")
+        .arg(hash_name)
+        .arg(fields)
+        .query_async(conn)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to hmget {} fields from hash {}",
+                fields.len(),
+                hash_name
+            )
+        })?;
+
+    Ok(values)
+}
+
 pub async fn set_hash_field_bytes(
     cfg: &RedisConfig,
     hash_name: &str,
@@ -184,13 +209,16 @@ pub async fn set_hash_fields_bytes_pipeline(
         return Ok(());
     }
 
-    let mut pipe = redis::pipe();
+    // HSET supports multiple field/value pairs in one command. This avoids sending
+    // one command per field and is noticeably faster for full-table localization.
+    let mut cmd = redis::cmd("HSET");
+    cmd.arg(hash_name);
 
     for (field, value) in items {
-        pipe.cmd("HSET").arg(hash_name).arg(field).arg(value).ignore();
+        cmd.arg(field).arg(value);
     }
 
-    let _: () = pipe.query_async(conn).await?;
+    let _: usize = cmd.query_async(conn).await?;
     Ok(())
 }
 

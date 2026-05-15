@@ -21,7 +21,10 @@ impl FlushDbRequest {
     pub fn validate_confirm(&self) -> Result<(), AppError> {
         let expected = format!("FLUSHDB db={} host={}", self.target.db, self.target.host);
         if self.confirm_text != expected {
-            return Err(AppError::BadRequest(format!("invalid confirm_text, expected: {}", expected)));
+            return Err(AppError::BadRequest(format!(
+                "invalid confirm_text, expected: {}",
+                expected
+            )));
         }
         Ok(())
     }
@@ -38,7 +41,10 @@ impl DeleteKeysRequest {
     pub fn validate_confirm(&self) -> Result<(), AppError> {
         let expected = format!("DELETE {} db={}", self.keys.len(), self.target.db);
         if self.confirm_text != expected {
-            return Err(AppError::BadRequest(format!("invalid confirm_text, expected: {}", expected)));
+            return Err(AppError::BadRequest(format!(
+                "invalid confirm_text, expected: {}",
+                expected
+            )));
         }
         Ok(())
     }
@@ -55,7 +61,10 @@ impl TableDeleteRequest {
     pub fn validate_confirm(&self) -> Result<(), AppError> {
         let expected = format!("DELETE_TABLES {} db={}", self.tables.len(), self.target.db);
         if self.confirm_text != expected {
-            return Err(AppError::BadRequest(format!("invalid confirm_text, expected: {}", expected)));
+            return Err(AppError::BadRequest(format!(
+                "invalid confirm_text, expected: {}",
+                expected
+            )));
         }
         Ok(())
     }
@@ -100,4 +109,3 @@ pub struct BatchLocalizeRequest {
     pub source_fields: Vec<String>,
     pub server: ServerConfig,
 }
-
