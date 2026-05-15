@@ -9,11 +9,13 @@
 <body class="popup-body">
   <div class="popup-shell">
     <div class="popup-header">
-      <h1>Cook-Redis 测试工具</h1>
+      <div>
+        <p class="eyebrow">Redis 联调控制台</p>
+        <h1>Cook-Redis 测试工具</h1>
+      </div>
       <div class="link-row">
         <a href="options.html" target="_blank" rel="noopener noreferrer">系统设置</a>
-        &emsp;&emsp;&emsp;
-        <a href="options.html" target="_blank" rel="noopener noreferrer">系统说明</a>
+        <a href="options.html" target="_blank" rel="noopener noreferrer">联调说明</a>
       </div>
     </div>
 
@@ -30,6 +32,13 @@
 
     <div class="popup-scroll" id="popupScroll">
       <div class="section snap-section">
+        <div class="section-heading">
+          <div>
+            <h2>当前环境</h2>
+            <div class="small">切换前请先在系统设置中保存 Redis 与后端地址。</div>
+          </div>
+          <a class="text-link" href="options.html" target="_blank" rel="noopener noreferrer">编辑配置</a>
+        </div>
         <div class="row">
           <div class="col">
             <label for="envName">环境</label>
@@ -38,10 +47,12 @@
             </select>
           </div>
         </div>
+        <div id="envSummary" class="env-summary" aria-live="polite"></div>
       </div>
 
       <div class="section snap-section">
         <h2>1. 测试 Redis 连接</h2>
+        <div class="small">先连通后端 API，再验证所选 Redis 配置是否可用。</div>
         <div class="row">
           <div class="col">
             <label for="testTarget">测试目标</label>
@@ -56,12 +67,13 @@
 
       <div class="section snap-section">
         <h2>2. 备份数据库</h2>
-        <div class="small">源库 → 目标库，会覆盖目标库</div>
+        <div class="warning-box">源库 → 目标库，会覆盖目标库。执行前会弹出确认。</div>
         <button id="backupBtn" type="button">执行备份</button>
       </div>
 
       <div class="section snap-section">
         <h2>3. 单账号本地化</h2>
+        <div class="small">根据源账号 Field 生成或指定目标 Field，并写入目标 Redis。</div>
         <div class="row">
           <div class="col">
             <label for="hashName">Hash 名</label>
@@ -137,12 +149,13 @@
           </div>
         </div>
 
-        <div class="small">自动读取 source Redis 中该 Hash 的全部字段，并写入 target Redis</div>
+        <div class="small">自动读取 source Redis 中该 Hash 的全部字段，并写入 target Redis。</div>
         <button id="batchLocalizeBtn" type="button">执行全表本地化</button>
       </div>
 
       <div class="section snap-section">
         <h2>5. 删除指定 Keys / Tables</h2>
+        <div class="warning-box">仅操作目标 Redis；确认弹窗会展示后端确认码。</div>
 
         <div class="row">
           <div class="col">
@@ -219,7 +232,7 @@
 
       <div class="section snap-section">
         <h2>7. 清空目标 DB</h2>
-        <div class="small">危险操作，需要二次确认</div>
+        <div class="warning-box">危险操作：清空目标 DB，需要输入完整后端确认码。</div>
         <button id="flushBtn" class="danger" type="button">清空目标 DB</button>
       </div>
     </div>
